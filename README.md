@@ -17,7 +17,7 @@ cmake .. && make
 ```
 ## Usage
 ```
-./run_lidar2camera <data_folder>
+./bin/run_lidar2camera <data_folder>
 ```
 The data folder should contain:
 - img_file
