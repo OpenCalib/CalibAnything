@@ -1,6 +1,6 @@
 ## Introduction
 
-This is a project for LiDAR to camera calibration.
+This is a project for LiDAR to camera calibration. For more calibration codes, please refer to the link <a href="https://github.com/PJLab-ADG/SensorsCalibration" title="SensorsCalibration">SensorsCalibration</a>
 
 ## Environment
 ```shell
@@ -34,6 +34,18 @@ We provide examples of two dataset:
 We have given a reference value of the extrinsic. You can set an initial error to the reference extrinsic in file `data/initial_error.txt` and test the accuracy of the algorithm. The format is "roll pitch yaw(degree) x y z(m)"
 
 ## result
-- initial projection: `init_proj.png`, `init_proj_seg.png`
+- gt projection: `init_proj.png`, `init_proj_seg.png`
+- before optimization: `error_proj.png`, `error_proj_seg.png`
 - refined projection: `refined_proj.png`, `refined_proj_seg.png`
 - refined extrinsic: `extrinsic.txt`
+
+## Citation
+If you find this project useful in your research, please consider cite:
+```
+@misc{2306.02656,
+Author = {Zhaotong Luo and Guohang Yan and Yikang Li},
+Title = {Calib-Anything: Zero-training LiDAR-Camera Extrinsic Calibration Method Using Segment Anything},
+Year = {2023},
+Eprint = {arXiv:2306.02656},
+}
+```
