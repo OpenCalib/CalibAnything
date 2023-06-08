@@ -1,8 +1,6 @@
 #ifndef UTIL_H_
 #define UTIL_H_
 
-#include <Eigen/Core>
-#include <Eigen/Dense>
 #include <vector>
 #include <unordered_map>
 #include <limits>
@@ -10,14 +8,32 @@
 #include <utility>
 #include <fstream>
 #include <dirent.h>
+#include <array>
+#include <map>
+#include <memory>
+#include <string>
+#include <chrono>
 
+#include <eigen3/Eigen/Core>
+#include <eigen3/Eigen/Dense>
+#include <eigen3/Eigen/Geometry>
+#include <pcl/octree/octree_search.h>
+#include <pcl/point_cloud.h>
 #include <pcl/common/transforms.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/segmentation/extract_clusters.h>
+#include <pcl/segmentation/region_growing.h>
+#include <pcl/segmentation/conditional_euclidean_clustering.h>
 #include <pcl/conversions.h>
 #include <pcl/features/normal_3d.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/point_types.h>
 #include <pcl/io/pcd_io.h>
 #include <opencv2/opencv.hpp>
+#include <opencv2/core/eigen.hpp>
 
 struct Var6
 {
@@ -216,6 +232,18 @@ class Util {
                     }
                 }
             }
+        }
+
+        static void UndistImg(cv::Mat & img, Eigen::Matrix3f intrinsic, std::vector<double> dist)
+        {
+            cv::Mat I = cv::Mat::eye(3, 3, CV_32FC1);
+            cv::Mat mapX, mapY;
+            cv::Mat img_undist = cv::Mat(img.size(), CV_32FC3);
+            cv::Mat K;
+            cv::eigen2cv(intrinsic, K);
+            cv::initUndistortRectifyMap(K, dist, I, K, img.size(), CV_32FC1, mapX, mapY);
+            cv::remap(img, img_undist, mapX, mapY, cv::INTER_LINEAR);
+            img = img_undist;
         }
 
     private:

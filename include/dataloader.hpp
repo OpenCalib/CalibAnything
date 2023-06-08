@@ -6,7 +6,7 @@ class DataLoader {
         DataLoader() = default;
         ~DataLoader() = default;
 
-        static void LoadMaskFile(const std::string mask_dir, cv::Mat &masks, std::vector<int> &mask_point_num)
+        static void LoadMaskFile(const std::string mask_dir, const Eigen::MatrixXf intrinsic, const std::vector<double> dist, cv::Mat &masks, std::vector<int> &mask_point_num)
         {
             std::vector<std::string> mask_files;
             DIR *dir;
@@ -41,6 +41,10 @@ class DataLoader {
                 std::string file = mask_files[n];
                 mask = cv::imread(mask_dir + '/' + file, cv::IMREAD_GRAYSCALE);
                 assert(mask.size() == masks.size());
+                if(intrinsic.cols() == 3)
+                {
+                    Util::UndistImg(mask, intrinsic, dist);
+                }
                 int n_white = 0;
                 auto it2 = masks.begin<cv::Vec4b>();
                 for (auto it = mask.begin<uchar>(); it != mask.end<uchar>(); it++)
@@ -67,7 +71,8 @@ class DataLoader {
         static void LoadCalibFile(
             const std::string filename, 
             Eigen::MatrixXf& intrinsic, 
-            Eigen::Matrix4f& extrinsic) 
+            Eigen::Matrix4f& extrinsic,
+            std::vector<double>& dist) 
         {
             std::ifstream file(filename);
             if (!file.is_open()) {
@@ -95,6 +100,14 @@ class DataLoader {
             else{
                 std::cout << "Wrong intrinsic parameter number." << std::endl;
                 exit(1);
+            }
+
+            getline(file, line);
+            ss = std::stringstream(line);
+            getline(ss, elem, ' ');
+            while (getline(ss, elem, ' '))
+            {
+                dist.emplace_back(stod(elem));
             }
 
             getline(file, line);

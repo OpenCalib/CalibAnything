@@ -6,27 +6,6 @@
 
 #pragma once
 
-#include <array>
-#include <map>
-#include <memory>
-#include <string>
-#include <vector>
-#include <chrono>
-#include <eigen3/Eigen/Core>
-#include <eigen3/Eigen/Dense>
-#include <eigen3/Eigen/Geometry>
-#include <pcl/features/normal_3d.h>
-#include <pcl/kdtree/kdtree_flann.h>
-#include <pcl/octree/octree_search.h>
-#include <pcl/point_cloud.h>
-#include <pcl/common/transforms.h>
-#include <pcl/filters/extract_indices.h>
-#include <pcl/sample_consensus/method_types.h>
-#include <pcl/sample_consensus/model_types.h>
-#include <pcl/segmentation/sac_segmentation.h>
-#include <pcl/segmentation/extract_clusters.h>
-#include <pcl/segmentation/region_growing.h>
-#include <pcl/segmentation/conditional_euclidean_clustering.h>
 #include "logging.hpp"
 #include "utility.hpp"
 #include "dataloader.hpp"
@@ -41,7 +20,6 @@ struct PointXYZINS
             float intensity;
             float curvature;
             int segment; // store segmentation result
-            int remove;
         };
     };
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -49,8 +27,8 @@ struct PointXYZINS
 
 POINT_CLOUD_REGISTER_POINT_STRUCT(PointXYZINS,
     (float, intensity, intensity)
+    (float, curvature, curvature)
     (int, segment, segment)
-    (int, remove, remove)
 )
 
 class Calibrator
@@ -74,8 +52,6 @@ public:
     void RandomSearch(int search_count, float xyz_range, float rpy_range, bool is_coarse);
     bool ProjectOnImage(const Eigen::Vector4f &vec, const Eigen::Matrix4f &T, int &x, int &y, int margin);
     void PrintCurrentError();
-    void DownsampleNormals(std::vector<float>& normals, std::vector<float>& normals_new, float ratio);
-    void FilterMask(Eigen::Matrix4f T);
     Eigen::Matrix4f GetFinalTransformation();
 
 private:
@@ -86,10 +62,9 @@ private:
     cv::Mat masks_;
     std::string img_file_;
     std::vector<int> mask_point_num_, seg_point_num_;
-    std::vector<std::vector<bool>> mask_valid_;
+    std::vector<double> dist_;
     float max_score_ = 0;
     int IMG_H, IMG_W, N_MASK, N_SEG;
-    int intrinsic_type_;
     float POINT_PER_PIXEL = 0.07;
     float w_n = 1, w_i = 1, w_s = 1;
     float curvature_max_ = 0;
