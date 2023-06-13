@@ -29,7 +29,7 @@ We have given a reference value of the extrinsic. You can set an initial error t
 
 ## Test your own data
 ```
-./run_lidar2camera <data_folder>
+./bin/run_lidar2camera <data_folder>
 ```
 The data folder should contain:
 - image file
