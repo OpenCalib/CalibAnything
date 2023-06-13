@@ -21,6 +21,7 @@ cmake .. && make
 ## Test Example
 We provide examples of two dataset:
 ```
+cd CalibAnything
 ./bin/run_lidar2camera ./data/st/1
 ./bin/run_lidar2camera ./data/ours/1
 ```
