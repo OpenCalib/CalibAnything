@@ -21,8 +21,8 @@ cmake .. && make
 ## Test Example
 We provide examples of two dataset:
 ```
-./run_lidar2camera ./data/st/1
-./run_lidar2camera ./data/ours/1
+./bin/run_lidar2camera ./data/st/1
+./bin/run_lidar2camera ./data/ours/1
 ```
 We have given a reference value of the extrinsic. You can set an initial error to the reference extrinsic in file `data/initial_error.txt` and test the accuracy of the algorithm. The format is "roll pitch yaw(degree) x y z(m)"
 
