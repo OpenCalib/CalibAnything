@@ -1,6 +1,6 @@
 ## CalibAnything
 
-This is a project for LiDAR to camera calibration using Segment Anything. It needs an image, a frame of point cloud and an initial value of the extrinsic. The related paper is [Calib-Anything: Zero-training LiDAR-Camera Extrinsic Calibration Method Using Segment Anything](https://arxiv.org/abs/2306.02656). For more calibration codes, please refer to the link <a href="https://github.com/PJLab-ADG/SensorsCalibration" title="SensorsCalibration">SensorsCalibration</a>.
+This is a project for LiDAR to camera extrinsic calibration using Segment Anything. It needs an image, a frame of point cloud, the camera intrinsic and an initial value of the extrinsic. The related paper is [Calib-Anything: Zero-training LiDAR-Camera Extrinsic Calibration Method Using Segment Anything](https://arxiv.org/abs/2306.02656). For more calibration codes, please refer to the link <a href="https://github.com/PJLab-ADG/SensorsCalibration" title="SensorsCalibration">SensorsCalibration</a>.
 
 ## Environment
 ```shell
