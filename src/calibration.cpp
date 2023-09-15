@@ -27,57 +27,53 @@ void Create_ColorBar()
     cv::cvtColor(color, color_bar, CV_HSV2BGR);
 }
 
-Calibrator::Calibrator(const std::string mask_dir,
-                       const std::string lidar_file,
-                       const std::string calib_file,
-                       const std::string img_file,
-                       const std::string error_file)
+
+Calibrator::Calibrator(JsonParams json_params)
 {
-    // load calib file
-    DataLoader::LoadCalibFile(calib_file, intrinsic_, extrinsic_, dist_);
-    init_extrinsic_ = extrinsic_;
+    params_ = json_params;
+    extrinsic_ = json_params.extrinsic;
+    std::cout << "----------Start processing data----------" << std::endl;
 
     // load image
-    img_file_ = img_file;
-    cv::Mat img = cv::imread(img_file);
+    cv::Mat img = cv::imread(params_.img_files[0]);
+    if (!img.data)
+    {  
+        std::cout << "Can not read " << params_.img_files[0] << std::endl;  
+        exit(1);  
+    }
     IMG_H = img.rows;
     IMG_W = img.cols;
-    masks_ = cv::Mat::zeros(IMG_H, IMG_W, CV_8UC4);
-    DataLoader::LoadMaskFile(mask_dir, intrinsic_, dist_, masks_, mask_point_num_);
-    N_MASK = mask_point_num_.size();
 
-    // add error to the inital extrinsic
-    float var[6] = {0};
-    std::ifstream file(error_file);
-    if (!file.is_open()) {
-        std::cout << "open file " << error_file << " failed." << std::endl;
-        exit(1);
+    for (int i = 0; i < params_.N_FILE; i++)
+    {
+        std::cout << "Processing data " << i + 1 << ":" << std::endl;
+        std::vector<int> mask_point_num;
+        cv::Mat masks = cv::Mat::zeros(IMG_H, IMG_W, CV_8UC4);
+        DataLoader::LoadMaskFile(params_.mask_dirs[i], params_.intrinsic, params_.dist, masks, mask_point_num);
+        masks_.push_back(masks);
+        mask_point_num_.push_back(mask_point_num);
+        n_mask_.push_back(mask_point_num.size());
+
+        pcl::PointCloud<pcl::PointXYZI>::Ptr pc_origin(new pcl::PointCloud<pcl::PointXYZI>);
+        pcl::PointCloud<PointXYZINS>::Ptr pc(new pcl::PointCloud<PointXYZINS>);
+        DataLoader::LoadLidarFile(params_.lidar_files[i], pc_origin);
+        ProcessPointcloud(pc_origin, pc);
+        pcs_.push_back(pc);
     }
-    file >> var[0] >> var[1] >> var[2] >> var[3] >> var[4] >> var[5];
-    std::cout << "Initial error set to (r p y x y z):" << var[0] << " " << var[1] << " " << var[2] << " "
-              << var[3] << " " << var[4] << " " << var[5] << std::endl;
-    Eigen::Matrix4f deltaT = Util::GetDeltaT(var);
-    extrinsic_ *= deltaT;
-
-    // load point cloud
-    pcl::PointCloud<pcl::PointXYZI>::Ptr pc_origin(new pcl::PointCloud<pcl::PointXYZI>);
-    DataLoader::LoadLidarFile(lidar_file, pc_origin);
-    // preprocess point cloud
-    std::cout << "----------Start processing data----------" << std::endl;
-    ProcessPointcloud(pc_origin);
-
     Create_ColorBar();
 }
 
-void Calibrator::ProcessPointcloud(const pcl::PointCloud<pcl::PointXYZI>::Ptr pc_origin)
+void Calibrator::ProcessPointcloud(const pcl::PointCloud<pcl::PointXYZI>::Ptr pc_origin, pcl::PointCloud<PointXYZINS>::Ptr pc)
 {
     // pre-filter points by initial extrinsic
     pcl::PointCloud<pcl::PointXYZI>::Ptr pc_filtered(new pcl::PointCloud<pcl::PointXYZI>);
     int margin = 300;
     float intensity_max = 1;
-    // float intensity_mean = 0;
-    std::vector<Var6> vars;
-    Util::GenVars(1, 5, 1, 0.5, vars);
+    std::vector<Vector<6>> vars;
+    if(params_.search_range_rot > 10 || params_.search_range_trans > 1){
+        std::cout << "Search range too large. Don't support!" << std::endl;
+    }
+    Util::GenVars(1, DEG2RAD(params_.search_range_rot), 1, params_.search_range_trans, vars);
     for (const auto src_pt : pc_origin->points)
     {
         if (!std::isfinite(src_pt.x) || !std::isfinite(src_pt.y) ||
@@ -86,35 +82,57 @@ void Calibrator::ProcessPointcloud(const pcl::PointCloud<pcl::PointXYZI>::Ptr pc
         Eigen::Vector4f vec;
         vec << src_pt.x, src_pt.y, src_pt.z, 1;
         int x, y;
-        for(Var6 var : vars){
-            Eigen::Matrix4f extrinsic = extrinsic_ * Util::GetDeltaT(var.value);
+        for(Vector<6> var : vars){
+            Eigen::Matrix4f extrinsic = extrinsic_ * Util::GetDeltaT(var);
             if (ProjectOnImage(vec, extrinsic, x, y, margin))
             {
                 intensity_max = MAX(intensity_max, src_pt.intensity);
-                // intensity_mean += src_pt.intensity;
                 pc_filtered->points.push_back(src_pt);
                 break;
             }
         }
     }
-
+    std::cout << "Point cloud num: " << pc_filtered->points.size() << std::endl;
     // pc_filtered->height = 1;
     // pc_filtered->width = pc_filtered->points.size();
     // pcl::io::savePCDFileASCII("cloud_filtered.pcd", *pc_filtered);
 
-    // intensity_mean /= pc_filtered->size();
-    // intensity_mean *= 2;
-    // intensity_mean = MAX(intensity_mean, 1);
-    if(intensity_max > 1)
-        intensity_max /= 2;
+    // downsample
+    if(params_.is_down_sample){
+        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_downsampled(new pcl::PointCloud<pcl::PointXYZI>);
+
+        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_tmp(new pcl::PointCloud<pcl::PointXYZI>);
+        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_tmp_ds(new pcl::PointCloud<pcl::PointXYZI>);
+        float kLeafSize = 0.1;
+        pcl::VoxelGrid<pcl::PointXYZI> filter_map;
+        filter_map.setLeafSize(kLeafSize, kLeafSize, kLeafSize);
+        cloud_downsampled->clear();
+
+        pcl::octree::OctreePointCloud<pcl::PointXYZI> octree{1250 * kLeafSize};
+        octree.setInputCloud(pc_filtered);
+        octree.addPointsFromInputCloud();
+        for (auto it = octree.leaf_depth_begin(); it != octree.leaf_depth_end(); ++it) {
+            auto ids = it.getLeafContainer().getPointIndicesVector();
+            cloud_tmp->clear();
+            for (auto id : ids) {
+                cloud_tmp->push_back(octree.getInputCloud()->points[id]);
+            }
+            filter_map.setInputCloud(cloud_tmp);
+            filter_map.filter(*cloud_tmp_ds);
+            *cloud_downsampled += *cloud_tmp_ds;
+        }
+        pc_filtered = cloud_downsampled;
+        std::cout << "Points num after downsample: " << pc_filtered->points.size() << std::endl;
+    }
 
     // segment pc
     pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
     std::vector<pcl::PointIndices> seg_indices;
-    Segment_pc(pc_filtered, normals, seg_indices);
+    int n_seg = Segment_pc(pc_filtered, normals, seg_indices);
+    n_seg_.push_back(n_seg);
+    std::cout << "Extract " << n_seg << " segments from point cloud." << std::endl;
 
     // constuct new type pc
-    pc_.reset(new pcl::PointCloud<PointXYZINS>);
     for (unsigned i = 0; i < pc_filtered->size(); i++)
     {
         PointXYZINS pt;
@@ -122,29 +140,28 @@ void Calibrator::ProcessPointcloud(const pcl::PointCloud<pcl::PointXYZI>::Ptr pc
         pt.y = (*pc_filtered)[i].y;
         pt.z = (*pc_filtered)[i].z;
         pt.intensity = (*pc_filtered)[i].intensity / intensity_max;
-        // pt.intensity = (*pc_filtered)[i].intensity / intensity_mean;
-        // pt.normal_x = (*normals)[i].normal_x;
-        // pt.normal_y = (*normals)[i].normal_y;
-        // pt.normal_z = (*normals)[i].normal_z;
+        pt.normal_x = (*normals)[i].normal_x;
+        pt.normal_y = (*normals)[i].normal_y;
+        pt.normal_z = (*normals)[i].normal_z;
         pt.curvature = (*normals)[i].curvature;
         curvature_max_ = MAX(curvature_max_, pt.curvature);
         // std::cout << pt.curvature << std::endl;
         pt.segment = -1;
-        pc_->points.push_back(pt);
+        pc->points.push_back(pt);
     }
 
     // curvature_max_ /= 2;
 
-    for (int i = 0; i < N_SEG; i++)
+    for (int i = 0; i < n_seg; i++)
     {
         for (int index : seg_indices[i].indices)
         {
-            (*pc_)[index].segment = i;
+            (*pc)[index].segment = i;
         }
     }
 }
 
-void Calibrator::Segment_pc(const pcl::PointCloud<pcl::PointXYZI>::Ptr cloud,
+int Calibrator::Segment_pc(const pcl::PointCloud<pcl::PointXYZI>::Ptr cloud,
                             pcl::PointCloud<pcl::Normal>::Ptr normals,
                             std::vector<pcl::PointIndices> &seg_indices)
 {   
@@ -178,11 +195,12 @@ void Calibrator::Segment_pc(const pcl::PointCloud<pcl::PointXYZI>::Ptr cloud,
     pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_out(new pcl::PointCloud<pcl::PointXYZI>);
     int plane_size = indices_plane->indices.size();
     pcl::PointIndices::Ptr indices_plane_all(new pcl::PointIndices);
-    while (plane_size > 2000)
+    std::vector<int> seg_point_num;
+    while (plane_size > params_.min_plane_point_num)
     {
         std::cout << "Plane points: " << plane_size << std::endl;
         seg_indices.push_back(*indices_plane);
-        seg_point_num_.push_back(plane_size);
+        seg_point_num.push_back(plane_size);
         indices_plane_all->indices.insert(indices_plane_all->indices.end(), indices_plane->indices.begin(), indices_plane->indices.end());
         extract.setIndices(indices_plane_all);
         extract.filter(*cloud_out);
@@ -191,12 +209,12 @@ void Calibrator::Segment_pc(const pcl::PointCloud<pcl::PointXYZI>::Ptr cloud,
         seg.segment(*indices_plane, *coefficients);
         plane_size = indices_plane->indices.size();
     }
-    std::cout << "Plane points < 1500, stop extracting plane." << std::endl;
+    std::cout << "Plane points < " << params_.min_plane_point_num << ", stop extracting plane." << std::endl;
 
     // euclidean cluster extraction
     pcl::EuclideanClusterExtraction<pcl::PointXYZI> ec;
     std::vector<pcl::PointIndices> eu_cluster_indices;
-    ec.setClusterTolerance(0.25);
+    ec.setClusterTolerance(params_.cluster_tolerance);
     ec.setMaxClusterSize(10000);
     ec.setMinClusterSize(50);
     ec.setSearchMethod(tree);
@@ -205,192 +223,228 @@ void Calibrator::Segment_pc(const pcl::PointCloud<pcl::PointXYZI>::Ptr cloud,
     ec.extract(eu_cluster_indices);
     std::cout << "Euclidean cluster number: " << eu_cluster_indices.size() << std::endl;
 
+
     seg_indices.insert(seg_indices.end(), eu_cluster_indices.begin(), eu_cluster_indices.end());
     for (auto it = eu_cluster_indices.begin(); it != eu_cluster_indices.end(); it++)
     {
-        seg_point_num_.push_back((*it).indices.size());
+        seg_point_num.push_back((*it).indices.size());
     }
 
-    N_SEG = seg_indices.size();
-    std::cout << "Extract " << N_SEG << " segments from point cloud." << std::endl;
+    // visualize clustering result
+    // int j = 0;
+    // pcl::PCDWriter writer;
+    // for (const auto& cluster : seg_indices)
+    // {
+    //     pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_cluster (new pcl::PointCloud<pcl::PointXYZI>);
+    //     for (const auto& idx : cluster.indices) {
+    //         cloud_cluster->push_back((*cloud)[idx]);
+    //     } //*
+    //     cloud_cluster->width = cloud_cluster->size ();
+    //     cloud_cluster->height = 1;
+    //     cloud_cluster->is_dense = true;
+
+    //     std::cout << "PointCloud representing the Cluster: " << cloud_cluster->size () << " data points." << std::endl;
+    //     std::stringstream ss;
+    //     ss << std::setw(4) << std::setfill('0') << j;
+    //     writer.write<pcl::PointXYZI> ("cloud_cluster_" + ss.str () + ".pcd", *cloud_cluster, false); //*
+    //     j++;
+    // }
+
+    seg_point_num_.push_back(seg_point_num);
+    return seg_indices.size();
 }
 
 void Calibrator::Calibrate()
-{   
-    VisualProjection(init_extrinsic_, img_file_, "init_proj.png");
-    VisualProjectionSegment(init_extrinsic_, img_file_, "init_proj_seg.png");
-    VisualProjection(extrinsic_, img_file_, "error_proj.png");
-    VisualProjectionSegment(extrinsic_, img_file_, "error_proj_seg.png");
-
+{
+    CalRatio();
     std::cout << "----------Start calibration----------" << std::endl;
-    if (!CalScore(extrinsic_, max_score_, true))
-    {
-        std::cout << "The initial extrinsic parameter error is too large." << std::endl;
-        exit(1);
+    VisualProjectionSegment(extrinsic_, "init_proj_seg.png", 0);
+    VisualProjection(extrinsic_, "init_proj.png", 0);
+    if (params_.is_gt_available){
+        VisualProjectionSegment(params_.extrinsic_gt, "gt_proj_seg.png", 0);
+        VisualProjection(params_.extrinsic_gt, "gt_proj.png", 0);
     }
-    std::cout << "init_score: " << max_score_ << std::endl;
-    BruteForceSearch(10, 0.5, 0, 0, true); //[-5, 5]
-    BruteForceSearch(6, 0.15, 0, 0, true); //[-0.9, 0.9]
-    RandomSearch(5000, 0.1, 0.5, true); //[-0.5, 0.5]
-
-    // float var[6] = {-0.3, 0, 0.1, 0, 0, 0};
-    // CalScore(extrinsic_* Util::GetDeltaT(var), max_score_, true);
-    // VisualProjection(extrinsic_ * Util::GetDeltaT(var), img_file_, "error_proj.png");
-    // VisualProjectionSegment(extrinsic_ * Util::GetDeltaT(var), img_file_, "error_proj_seg.png");
-
-
-    std::cout << "---------------Result---------------" << std::endl;
-    PrintCurrentError();
-    VisualProjection(extrinsic_, img_file_, "refined_proj.png");
-    VisualProjectionSegment(extrinsic_, img_file_, "refined_proj_seg.png");
+    max_score_ = CalScore(extrinsic_);
+    float rot_init = params_.search_range_rot + 0.5;
+    float trans_init = params_.search_range_trans + 0.05;
+    do{
+        best_var_ << 0, 0, 0, 0, 0, 0;
+        if(params_.num_thread != 0)
+            RandomSearchThread(params_.search_num, trans_init, DEG2RAD(rot_init));
+        else 
+            RandomSearch(params_.search_num, trans_init, DEG2RAD(rot_init), 0);
+        extrinsic_ *= Util::GetDeltaT(best_var_);
+        rot_init /= 2;
+        trans_init /= 1.5;
+    } while (rot_init > 0.3);
+    std::cout << "----------Calibration complete----------" << std::endl;
+    if(params_.is_gt_available)
+    {
+        PrintCurrentError();
+    }
+    VisualProjectionSegment(extrinsic_, "refined_proj_seg.png", 0);
+    VisualProjection(extrinsic_, "refined_proj.png", 0);
 }
 
-bool Calibrator::CalScore(Eigen::Matrix4f T, float &score, bool is_coarse)
+double Calibrator::CalScore(Eigen::Matrix4f T)
 {
-    std::vector<std::vector<float>> mask_normal(N_MASK);
-    std::vector<std::vector<float>> mask_intensity(N_MASK);
-    std::vector<std::unordered_map<int, int>> mask_segment(N_MASK);
-    int min_mask_point_num = 900;
-
-    // pcl::PointCloud<pcl::PointXYZI>::Ptr pc(new pcl::PointCloud<pcl::PointXYZI>);
-    for (const auto &src_pt : pc_->points)
+    double score = 0;
+    float normal_sum = 0, intensity_sum = 0, segment_sum = 0;
+    for (int f = 0; f < params_.N_FILE; f++)
     {
-        Eigen::Vector4f vec;
-        vec << src_pt.x, src_pt.y, src_pt.z, 1;
-        int x, y;
-        if (ProjectOnImage(vec, T, x, y, 0))
+        int n_mask = n_mask_[f];
+        pcl::PointCloud<PointXYZINS>::Ptr pc(pcs_[f]);
+        cv::Mat masks = masks_[f];
+        std::vector<std::vector<float>> mask_normal(n_mask);
+        std::vector<std::vector<float>> mask_intensity(n_mask);
+        std::vector<std::unordered_map<int, int>> mask_segment(n_mask);
+        int n_bottom = 0, n_top = 0;
+        for (const auto &src_pt : pc->points)
         {
-            cv::Vec4b mask_id = masks_.at<cv::Vec4b>(y, x);
-            for (int c = 0; c < 4; c++)
+            Eigen::Vector4f vec;
+            vec << src_pt.x, src_pt.y, src_pt.z, 1;
+            int x, y;
+            if (ProjectOnImage(vec, T, x, y, 0))
             {
-                if (mask_id[c] != 0)
+                if(y > (params_.point_range_bottom - 0.1) * IMG_H && y < params_.point_range_bottom * IMG_H){n_bottom++;}
+                // else if(y < (params_.point_range_top - 0.2) * IMG_H){n_top++;}
+                cv::Vec4b mask_id = masks.at<cv::Vec4b>(y, x);
+                for (int c = 0; c < 4; c++)
                 {
-                    // if(src_pt.remove != 0 || mask_point_num_[mask_id[c] - 1] < 40000){
-                    //     mask_normal[mask_id[c] - 1].push_back(src_pt.normal_x);
-                    //     mask_normal[mask_id[c] - 1].push_back(src_pt.normal_y);
-                    //     mask_normal[mask_id[c] - 1].push_back(src_pt.normal_z);
-                    // }
-                    mask_normal[mask_id[c] - 1].push_back(src_pt.curvature);
-                    mask_intensity[mask_id[c] - 1].push_back(src_pt.intensity);
-                    if (src_pt.segment != -1)
+                    if (mask_id[c] != 0)
                     {
-                        mask_segment[mask_id[c] - 1][src_pt.segment]++;
+                        mask_normal[mask_id[c] - 1].push_back(src_pt.normal_x);
+                        mask_normal[mask_id[c] - 1].push_back(src_pt.normal_y);
+                        mask_normal[mask_id[c] - 1].push_back(src_pt.normal_z);
+                    
+                        mask_intensity[mask_id[c] - 1].push_back(src_pt.intensity);
+                        if (src_pt.segment != -1)
+                        {
+                            mask_segment[mask_id[c] - 1][src_pt.segment]++;
+                        }
                     }
+                    else
+                        break;
                 }
-                else
-                    break;
             }
         }
-    }    
+        // std::cout << n_bottom << std::endl;
 
-    // calculate consistency
-    std::vector<float> normal_sims, intensity_sims, segment_sims;
-    std::vector<float> weight_normal, weight_intensity, weight_seg;
-    float mean_depth;
-    for (int i = 0; i < N_MASK; i++)
-    {
-        // filter masks with too few points
-        if (mask_point_num_[i] < min_mask_point_num)
-            continue;
-        int points_on_mask = mask_intensity[i].size();
-        if (points_on_mask < 20)
-            continue;     
-        float adjust = 1 - 0.5 * pow(points_on_mask, -0.5);
-        // float adjust = 1;
-
-        // normal consistency
-        // int normal_size = mask_normal[i].size() / 3;
-        // // std::cout << normal_size << std::endl;
-        // if (normal_size < 20)
-        //     continue;
-        // Eigen::MatrixXf normals;
-        // normals = Eigen::Map<Eigen::MatrixXf, Eigen::Unaligned>(mask_normal[i].data(), 3, normal_size);
-        // Eigen::MatrixXf cos_sim = normals.transpose() * normals;
-        // adjust = 1 - pow(normal_size, -0.5);
-        // float normal_sim = cos_sim.array().abs().mean() * adjust;
-        // if(is_coarse){
-        //     weight_normal.push_back(normal_size);
-        // }
-        // normal_sims.push_back(normal_sim);
-        float normal_sim = (1 - Util::Std(mask_normal[i]) / curvature_max_) * adjust;
-        if(is_coarse){
-            weight_normal.push_back(points_on_mask);
-        }
-        normal_sims.push_back(normal_sim);
-
-        // intensity consistency
-        float intensity_sim = (1 - Util::Std(mask_intensity[i])) * adjust;
-        if(is_coarse){
-            weight_intensity.push_back(points_on_mask);
-        }
-        intensity_sims.push_back(intensity_sim);
-
-        // segment consistency
-        if (mask_segment[i].size() != 0)
+        if (n_bottom < 0.1 * POINT_PER_PIXEL * 0.1 * IMG_H * IMG_W ) // || n_top > 0.05 * POINT_PER_PIXEL * (params_.point_range_top - 0.2) * IMG_H * IMG_W)
         {
-            std::vector<int> seg_ratio;
-            for (auto it = mask_segment[i].begin(); it != mask_segment[i].end(); it++)
-            {
-                seg_ratio.push_back(it->second);
-            }
-            sort(seg_ratio.begin(), seg_ratio.end(), std::greater<int>());
-            if (seg_ratio[0] < 10)
+            // std::cout << "Not enough points on the bottom of the image." << std::endl;
+            score += 2;
+            continue;
+        }
+        // calculate consistency
+
+        std::vector<float> normal_scores, intensity_scores, segment_scores;
+        std::vector<float> weight_normal, weight_intensity, weight_seg;
+        int min_pixel = IMG_H * IMG_W / 1200;
+        min_pixel = MIN(min_pixel, 2000);
+        for (int i = 0; i < n_mask_[f]; i++)
+        {
+            // filter masks with too few points
+            if (mask_point_num_[f][i] < min_pixel)
                 continue;
-            float k = 1;
-            int sum = 0;
-            float segment_sim = 0;
-            for (unsigned i = 0; i < seg_ratio.size(); i++)
+            int num_base = mask_point_num_[f][i] * POINT_PER_PIXEL;
+            int num_inside = mask_intensity[i].size();
+            // std::cout << num_base << std::endl;
+            // std::cout << num_inside << std::endl;
+
+            float weight = num_inside;
+            if (num_inside < 0.1 * num_base || num_inside < 10)
+                continue;     
+
+            
+            // float adjust = 1 - 0.5 * pow(num_inside, -0.5);
+            float adjust = 1;
+
+            // normal consistency
+            Eigen::MatrixXf normals;
+            normals = Eigen::Map<Eigen::MatrixXf, Eigen::Unaligned>(mask_normal[i].data(), 3, num_inside);
+            float normal_sim = (normals.transpose() * normals).array().abs().mean(); 
+            normal_scores.push_back(normal_sim * adjust);
+            weight_normal.push_back(weight);
+
+            // intensity consistency
+            float intensity_sim = (1 - Util::Std(mask_intensity[i]));
+            intensity_scores.push_back(intensity_sim * adjust);
+            weight_intensity.push_back(weight);
+
+            // segment consistency
+            if (mask_segment[i].size() > 0)
             {
-                segment_sim += seg_ratio[i] * k;
-                k *= 0.4;
-                sum += seg_ratio[i];
-                // std::cout << seg_ratio[i] << std::endl;
-            }
-            segment_sim /= sum;
-            // adjust = 1 - pow(sum, -0.5);
-            segment_sims.push_back(segment_sim * adjust);
-            if(is_coarse){
+                std::vector<int> seg_ratio;
+                for (auto it = mask_segment[i].begin(); it != mask_segment[i].end(); it++)
+                {
+                    seg_ratio.push_back(it->second);
+                }
+                sort(seg_ratio.begin(), seg_ratio.end(),std::greater<int>());
+                float k = 1;
+                int sum = 0;
+                float segment_sim = 0;
+                for (auto it = seg_ratio.begin(); it != seg_ratio.end(); it++)
+                {
+                    segment_sim += *it * k;
+                    k *= 0.5;
+                    sum += *it;
+                }
+                // if(seg_ratio[0] * 1.0 / sum < 0.2)
+                //     continue;
+                // segment_sim = segment_sim / sum * (1 + 0.05 * log10(sum));
+                segment_sim = segment_sim / sum;
+                segment_scores.push_back(segment_sim);
                 weight_seg.push_back(sum);
             }
         }
-    }
-    if (normal_sims.size() == 0 || intensity_sims.size() == 0 || segment_sims.size() == 0)
-    {
-        std::cout << "Not enough points on masks. Skip this extrinsic." << std::endl;
-        return false;
-    }
+        if (normal_scores.size() == 0 || intensity_scores.size() == 0 || segment_scores.size() == 0)
+        {
+            //  std::cout << "Not enough points on masks." << std::endl;
+            score += 2;
+            continue;
+        }
+        // std::cout << normal_scores.size() << " " << intensity_scores.size() << segment_scores.size() << std::endl;
 
-    float normal_score, intensity_score, segment_score;
-    normal_score = Util::WeightMean(normal_sims, weight_normal);
-    intensity_score = Util::WeightMean(intensity_sims, weight_intensity);
-    segment_score = Util::WeightMean(segment_sims, weight_seg);
-    score = 0.3 * normal_score + 0.3 * intensity_score + 0.4 * segment_score;
+        float normal_score, intensity_score, segment_score;
+        normal_score = Util::WeightMean(normal_scores, weight_normal);
+        intensity_score = Util::WeightMean(intensity_scores, weight_intensity);
+        segment_score = Util::WeightMean(segment_scores, weight_seg);
+        normal_sum += normal_score;
+        intensity_sum += intensity_score;
+        segment_sum += segment_score;
 
-    // std::cout << "score: " << normal_score << " " << intensity_score << " " << segment_score << " " << score << std::endl;
-    return true;
+        score += 2 - 0.3 * normal_score - 0.2 * intensity_score - 0.5 * segment_score 
+            - 0.0001 * normal_scores.size();
+
+        // std::cout << "score: " << normal_score << " " << intensity_score << " " << segment_score <<
+        //     " " << score << std::endl;
+    }
+    score = score / params_.N_FILE;
+    // std::cout << "score: " << normal_sum<< " " << intensity_sum << " " << segment_sum <<
+    // " " << score << std::endl;
+    return score;
 }
 
-void Calibrator::BruteForceSearch(int rpy_range, float rpy_resolution, int xyz_range, float xyz_resolution, bool is_coarse)
+void Calibrator::BruteForceSearch(int rpy_range, float rpy_resolution, int xyz_range, float xyz_resolution)
 {
-    std::cout << "Start brute-force search around [-" << rpy_range * rpy_resolution << ","
-              << rpy_range * rpy_resolution << "] degree and [-" << xyz_range * xyz_resolution 
-              << "," << xyz_range * xyz_resolution << "] m" << std::endl;
-    float best_var[6] = {0};
+    Vector<6> best_var;
     float score;
-    std::vector<Var6> vars;
+    std::vector<Vector<6>> vars;
     Util::GenVars(rpy_range, rpy_resolution, xyz_range, xyz_resolution, vars);
     for (auto var : vars)
     {
-        CalScore(extrinsic_ * Util::GetDeltaT(var.value), score, is_coarse);
-        if (score > max_score_)
+        Eigen::Matrix4f T = extrinsic_ * Util::GetDeltaT(var);
+        float score = CalScore(T);
+        if (score < max_score_)
         {
             max_score_ = score;
             for (size_t k = 0; k < 6; k++)
             {
-                best_var[k] = var.value[k];
+                best_var[k] = var(k);
             }
 
-            std::cout << "match score increase to: " << max_score_ << ", "
+            std::cout << "Loss decreases to: " << max_score_ << ", "
                     << "var:" << best_var[0] << " " << best_var[1] << " " << best_var[2]
                     << " " << best_var[3] << " " << best_var[4] << " " << best_var[5]
                     << std::endl;
@@ -402,18 +456,33 @@ void Calibrator::BruteForceSearch(int rpy_range, float rpy_resolution, int xyz_r
     extrinsic_ *= deltaT;
 }
 
-void Calibrator::RandomSearch(int search_count, float xyz_range, float rpy_range, bool is_coarse)
+void Calibrator::RandomSearchThread(int search_count, float xyz_range, float rpy_range)
 {
-    std::cout << "Start random search around [-" << rpy_range << "," << rpy_range << "] degree and [-"
-              << xyz_range << "," << xyz_range << "] m" << std::endl;
-    float var[6] = {0};
-    float bestVal[6] = {0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < params_.num_thread; i++)
+    {
+        threads.push_back(std::thread(&Calibrator::RandomSearch, this, int(search_count / params_.num_thread), xyz_range, rpy_range, i));
+    }
+    for (int i = 0; i < params_.num_thread; i++)
+    {
+        if(threads[i].joinable()){
+            threads[i].join();
+        }
+    }
+}
 
+void Calibrator::RandomSearch(int search_count, float xyz_range, float rpy_range, int thread_id)
+{
+    if(thread_id == 0){
+        std::cout << "Start random search around [-" << RAD2DEG(rpy_range) << "," << RAD2DEG(rpy_range) << "] degree and [-"
+              << xyz_range << "," << xyz_range << "] m" << std::endl;
+    }
+    Vector<6> var, best_var;
+    double max_score = max_score_;
     std::default_random_engine generator((clock() - time(0)) /
-                                         (double)CLOCKS_PER_SEC);
+                                         (double)CLOCKS_PER_SEC + thread_id);
     std::uniform_real_distribution<double> distribution_xyz(-xyz_range, xyz_range);
     std::uniform_real_distribution<double> distribution_rpy(-rpy_range, rpy_range);
-
     for (int i = 0; i < search_count; i++)
     {
         var[0] = distribution_rpy(generator);
@@ -422,34 +491,30 @@ void Calibrator::RandomSearch(int search_count, float xyz_range, float rpy_range
         var[3] = distribution_xyz(generator);
         var[4] = distribution_xyz(generator);
         var[5] = distribution_xyz(generator);
-        Eigen::Matrix4f deltaT = Util::GetDeltaT(var);
-        float score;
-        if (!CalScore(extrinsic_ * deltaT, score, is_coarse))
+        Eigen::Matrix4f T = extrinsic_ * Util::GetDeltaT(var);
+        float score = CalScore(T);
+        if (score < max_score)
         {
-            continue;
-        }
-        if (score > max_score_)
-        {
-            max_score_ = score;
-            for (size_t k = 0; k < 6; k++)
-            {
-                bestVal[k] = var[k];
-            }
-            std::cout << "match score increase to: " << max_score_ << ", "
-                      << "val:" << bestVal[0] << " " << bestVal[1] << " " << bestVal[2]
-                      << " " << bestVal[3] << " " << bestVal[4] << " " << bestVal[5]
-                      << std::endl;
+            max_score = score;
+            best_var = var;
         }
     }
-    std::cout << "best val:" << bestVal[0] << " " << bestVal[1] << " " << bestVal[2] << " " << bestVal[3] << " "
-              << bestVal[4] << " " << bestVal[5] << std::endl;
-    extrinsic_ *= Util::GetDeltaT(bestVal);
+    std::unique_lock<std::mutex> lg(mtx_);
+    if(max_score < max_score_)
+    {
+        std::cout << "Thread " << thread_id << " Loss decreases to: " << max_score << ", "
+                      << "var:" << best_var[0] << " " << best_var[1] << " " << best_var[2]
+                      << " " << best_var[3] << " " << best_var[4] << " " << best_var[5]
+                      << std::endl;
+        max_score_ = max_score;
+        best_var_ = best_var;
+    }
 }
 
 void Calibrator::PrintCurrentError()
 {
-    Eigen::Matrix4f error_T = extrinsic_ * init_extrinsic_.inverse();
-    std::cout << "Error:" << RAD2DEG(Util::GetRoll(error_T)) << " " << RAD2DEG(Util::GetPitch(error_T)) << " " << RAD2DEG(Util::GetYaw(error_T))
+    Eigen::Matrix4f error_T = params_.extrinsic_gt * extrinsic_.inverse();
+    std::cout << "Error(roll pitch yaw x y z): " << RAD2DEG(Util::GetRoll(error_T)) << " " << RAD2DEG(Util::GetPitch(error_T)) << " " << RAD2DEG(Util::GetYaw(error_T))
               << " " << Util::GetX(error_T) << " " << Util::GetY(error_T) << " " << Util::GetZ(error_T) << std::endl;
 }
 
@@ -458,28 +523,33 @@ Eigen::Matrix4f Calibrator::GetFinalTransformation()
     return extrinsic_;
 }
 
-void Calibrator::VisualProjection(Eigen::Matrix4f T, std::string img_file, std::string save_name)
+void Calibrator::VisualProjection(Eigen::Matrix4f T, std::string save_name, int index)
 {
-    cv::Mat img_color = cv::imread(img_file);
-    if(intrinsic_.cols() == 3)
+    cv::Mat img_color = cv::imread(params_.img_files[index]);
+    if(!img_color.data)
+    {  
+        std::cout << "Can not read " << params_.img_files[index] << std::endl;  
+        exit(1);  
+    }
+    if(params_.intrinsic.cols() == 3)
     {
-        Util::UndistImg(img_color, intrinsic_, dist_);
+        Util::UndistImg(img_color, params_.intrinsic, params_.dist);
     }
     std::vector<cv::Point2f> lidar_points;
-    for (const auto &src_pt : pc_->points)
+    for (const auto &src_pt : pcs_[index]->points)
     {
         Eigen::Vector4f vec;
         vec << src_pt.x, src_pt.y, src_pt.z, 1;
         int x, y;
         if (ProjectOnImage(vec, T, x, y, 0))
         {
-            if (src_pt.intensity > 0.4) {
+            // if (src_pt.intensity > 0.4) {
                 cv::Point2f lidar_point(x, y);
                 lidar_points.push_back(lidar_point);
-            }
+            // }
         }
     }
-
+    // std::cout << lidar_points.size() << std::endl;
     for (cv::Point point : lidar_points)
     {
         cv::circle(img_color, point, 3, cv::Scalar(0, 255, 0), -1, 0);
@@ -488,24 +558,55 @@ void Calibrator::VisualProjection(Eigen::Matrix4f T, std::string img_file, std::
     std::cout << "Image saved: " << save_name << std::endl;
 }
 
-void Calibrator::VisualProjectionSegment(Eigen::Matrix4f T, std::string img_file, std::string save_name)
+void Calibrator::CalRatio()
 {
-    cv::Mat img_color = cv::imread(img_file);
-    if(intrinsic_.cols() == 3)
+    std::vector<cv::Point2f> lidar_points;
+    int point_num = 0;
+    assert(params_.point_range_top < params_.point_range_bottom);
+    int top = params_.point_range_top * IMG_H;
+    int bottom = params_.point_range_bottom * IMG_H;
+    for (const auto &src_pt : pcs_[0]->points)
     {
-        Util::UndistImg(img_color, intrinsic_, dist_);
+        Eigen::Vector4f vec;
+        vec << src_pt.x, src_pt.y, src_pt.z, 1;
+        int x, y;
+        if (ProjectOnImage(vec, extrinsic_, x, y, 0))
+        {
+            if(y > top && y < bottom){
+                point_num++;
+            }
+        }
     }
-    std::vector<std::vector<cv::Point2f>> lidar_points(N_SEG);
-    for (const auto &src_pt : pc_->points)
+    int area = (params_.point_range_bottom - params_.point_range_top) * IMG_H * IMG_W;
+    POINT_PER_PIXEL = point_num * 1.0 / area;
+
+    std::cout << "Estimated point number per pixel: " << POINT_PER_PIXEL << std::endl;
+}
+
+void Calibrator::VisualProjectionSegment(Eigen::Matrix4f T, std::string save_name, int index)
+{
+    cv::Mat img_color2 = cv::imread(params_.img_files[index]);
+    if (!img_color2.data)
+    {  
+        std::cout << "Can not read " << params_.img_files[index] << std::endl;  
+        exit(1);  
+    }
+    cv::Mat img_color;
+    cv::resize(img_color2, img_color, cv::Size(IMG_W, IMG_H));  
+    if(params_.intrinsic.cols() == 3)
+    {
+        Util::UndistImg(img_color, params_.intrinsic, params_.dist);
+    }
+    std::vector<std::vector<cv::Point2f>> lidar_points(n_seg_[index]);
+    for (const auto &src_pt : pcs_[index]->points)
     {
         Eigen::Vector4f vec;
         vec << src_pt.x, src_pt.y, src_pt.z, 1;
         int x, y;
         if (ProjectOnImage(vec, T, x, y, 0))
         {
-
             int seg = src_pt.segment;
-            if (seg != -1)
+            if (seg != -1 && seg != 0)
             {
                 cv::Point2f lidar_point(x, y);
                 lidar_points[seg].push_back(lidar_point);
@@ -513,7 +614,7 @@ void Calibrator::VisualProjectionSegment(Eigen::Matrix4f T, std::string img_file
         }
     }
 
-    for (int i = 1; i < N_SEG; i++)
+    for (int i = 0; i < n_seg_[index]; i++)
     {
         cv::Vec3b color = color_bar.at<cv::Vec3b>(0, i);
         for (cv::Point point : lidar_points[i])
@@ -528,16 +629,16 @@ void Calibrator::VisualProjectionSegment(Eigen::Matrix4f T, std::string img_file
 bool Calibrator::ProjectOnImage(const Eigen::Vector4f &vec, const Eigen::Matrix4f &T, int &x, int &y, int margin)
 {
     Eigen::Vector3f vec2;
-    if (intrinsic_.cols() == 4)
+    if (params_.intrinsic.cols() == 4)
     {
-        vec2 = intrinsic_ * T * vec;
+        vec2 = params_.intrinsic * T * vec;
     }
     else
     {
         Eigen::Vector4f cam_point = T * vec;
         Eigen::Vector3f cam_vec;
         cam_vec << cam_point(0), cam_point(1), cam_point(2);
-        vec2 = intrinsic_ * cam_vec;
+        vec2 = params_.intrinsic * cam_vec;
     }
     if (vec2(2) <= 0)
         return false;

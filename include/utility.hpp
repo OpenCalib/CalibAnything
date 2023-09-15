@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <chrono>
+#include <thread> 
 
 #include <eigen3/Eigen/Core>
 #include <eigen3/Eigen/Dense>
@@ -27,6 +28,7 @@
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/segmentation/region_growing.h>
 #include <pcl/segmentation/conditional_euclidean_clustering.h>
+#include <pcl/filters/voxel_grid.h>
 #include <pcl/conversions.h>
 #include <pcl/features/normal_3d.h>
 #include <pcl/kdtree/kdtree_flann.h>
@@ -35,10 +37,9 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
 
-struct Var6
-{
-    float value[6] = {0};
-};
+template <int dim> using Tuple = std::tuple< Eigen::Matrix<double, dim, 1>, double>;
+
+template <int dim> using Vector = Eigen::Matrix<double, dim, 1>;
 
 class Util {
     public:
@@ -46,16 +47,29 @@ class Util {
         ~Util() = default;
 
 
-        static Eigen::Matrix4f GetDeltaT(const float var[6]) {
+        // static Eigen::Matrix4f GetDeltaT(const float var[6]) {
+        //     auto deltaR = Eigen::Matrix3f(
+        //         Eigen::AngleAxisf(var[2], Eigen::Vector3f::UnitZ()) *
+        //         Eigen::AngleAxisf(var[1], Eigen::Vector3f::UnitY()) *
+        //         Eigen::AngleAxisf(var[0], Eigen::Vector3f::UnitX()));
+        //     Eigen::Matrix4f deltaT = Eigen::Matrix4f::Identity();
+        //     deltaT.block<3, 3>(0, 0) = deltaR;
+        //     deltaT(0, 3) = var[3];
+        //     deltaT(1, 3) = var[4];
+        //     deltaT(2, 3) = var[5];
+        //     return deltaT;
+        // }
+
+        static Eigen::Matrix4f GetDeltaT(const Eigen::Matrix<double, 6, 1> var) {
             auto deltaR = Eigen::Matrix3f(
-                Eigen::AngleAxisf(DEG2RAD(var[2]), Eigen::Vector3f::UnitZ()) *
-                Eigen::AngleAxisf(DEG2RAD(var[1]), Eigen::Vector3f::UnitY()) *
-                Eigen::AngleAxisf(DEG2RAD(var[0]), Eigen::Vector3f::UnitX()));
+                Eigen::AngleAxisf(var(2,0), Eigen::Vector3f::UnitZ()) *
+                Eigen::AngleAxisf(var(1,0), Eigen::Vector3f::UnitY()) *
+                Eigen::AngleAxisf(var(0,0), Eigen::Vector3f::UnitX()));
             Eigen::Matrix4f deltaT = Eigen::Matrix4f::Identity();
             deltaT.block<3, 3>(0, 0) = deltaR;
-            deltaT(0, 3) = var[3];
-            deltaT(1, 3) = var[4];
-            deltaT(2, 3) = var[5];
+            deltaT(0, 3) = var(3,0);
+            deltaT(1, 3) = var(4,0);
+            deltaT(2, 3) = var(5,0);
             return deltaT;
         }
 
@@ -184,7 +198,21 @@ class Util {
             }
             return sum;
         }
-        
+
+        template <class T>
+        static T Max(const std::vector<T> a)
+        {
+            auto it = max_element(a.begin(), a.end());
+            return *it;
+        }
+
+        template <class T>
+        static T Min(const std::vector<T> a)
+        {
+            auto it = min_element(a.begin(), a.end());
+            return *it;
+        }
+
         template <class T>
         static T Mean(const std::vector<T> a)
         {
@@ -204,9 +232,9 @@ class Util {
             return std;
         }
 
-        static void GenVars(int rpy_range, float rpy_resolution, int xyz_range, float xyz_resolution, std::vector<Var6> & out)
+        static void GenVars(int rpy_range, float rpy_resolution, int xyz_range, float xyz_resolution, std::vector<Vector<6>> & out)
         {
-            Var6 var;
+            Vector<6> var;
             for (int i1 = -rpy_range; i1 <= rpy_range; i1 += 1)
             {
                 for(int i2 = -rpy_range; i2 <= rpy_range; i2 += 1)
@@ -219,12 +247,12 @@ class Util {
                             {
                                 for(int i6 = -xyz_range; i6 <= xyz_range; i6 += 1)
                                 {
-                                    var.value[0] = i1 * rpy_resolution;
-                                    var.value[1] = i2 * rpy_resolution;
-                                    var.value[2] = i3 * rpy_resolution;
-                                    var.value[3] = i4 * xyz_resolution;
-                                    var.value[4] = i5 * xyz_resolution;
-                                    var.value[5] = i6 * xyz_resolution;
+                                    var(0) = i1 * rpy_resolution;
+                                    var(1) = i2 * rpy_resolution;
+                                    var(2) = i3 * rpy_resolution;
+                                    var(3) = i4 * xyz_resolution;
+                                    var(4) = i5 * xyz_resolution;
+                                    var(5) = i6 * xyz_resolution;
                                     out.push_back(var);
                                 }
                             }

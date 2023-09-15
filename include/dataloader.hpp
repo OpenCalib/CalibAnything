@@ -6,7 +6,12 @@ class DataLoader {
         DataLoader() = default;
         ~DataLoader() = default;
 
-        static void LoadMaskFile(const std::string mask_dir, const Eigen::MatrixXf intrinsic, const std::vector<double> dist, cv::Mat &masks, std::vector<int> &mask_point_num)
+        static void LoadMaskFile(const std::string mask_dir, 
+                                 const Eigen::MatrixXf intrinsic, 
+                                 const std::vector<double> dist, 
+                                 cv::Mat &masks,
+                                 //  cv::Mat &masks_margin,
+                                 std::vector<int> &mask_point_num)
         {
             std::vector<std::string> mask_files;
             DIR *dir;
@@ -25,7 +30,7 @@ class DataLoader {
             }
             if (mask_files.size() == 0)
             {
-                std::cout << "No valid mask file under dir." << std::endl;
+                std::cout << "No valid mask file under mask dir "<< mask_dir << std::endl;
                 exit(1);
             }
             sort(mask_files.begin(), mask_files.end());
@@ -120,9 +125,31 @@ class DataLoader {
 
         static void LoadLidarFile(const std::string filename, pcl::PointCloud<pcl::PointXYZI>::Ptr pc)
         {
-            if (pcl::io::loadPCDFile(filename, *pc) < 0)
-            {
-                std::cout << "[ERROR] cannot open pcd_file: " << filename << "\n";
+            if(filename.substr(filename.size() - 3) == "pcd"){
+                if (pcl::io::loadPCDFile(filename, *pc) < 0)
+                {
+                    std::cout << "[ERROR] cannot open pcd_file: " << filename << "\n";
+                    exit(1);
+                }
+            }
+            else if(filename.substr(filename.size() - 3) == "bin"){
+                std::fstream input(filename.c_str(), std::ios::in | std::ios::binary);
+                if(!input.good()){
+		            std::cerr << "Could not read file: " << filename << std::endl;
+		            exit(1);
+	            }
+                input.seekg(0, std::ios::beg);
+                int i;
+                for (i=0; input.good() && !input.eof(); i++) {
+                    pcl::PointXYZI point;
+                    input.read((char *) &point.x, 3*sizeof(float));
+                    input.read((char *) &point.intensity, sizeof(float));
+                    pc->push_back(point);
+                }
+                input.close();
+            }
+            else{
+                std::cout << "Unsupported lidar file type" << std::endl;
                 exit(1);
             }
         }
