@@ -1,4 +1,7 @@
 #include "calibration.hpp"
+#include <random>
+
+
 
 cv::Mat color_bar = cv::Mat(1, 13 * 3 * 3, CV_8UC3);
 unsigned char *pBar = color_bar.data;
@@ -24,7 +27,7 @@ void Create_ColorBar()
         pColor[ba * 3 + 1] = S[s / 13];
         pColor[ba * 3 + 2] = V[v / 13 / 3];
     }
-    cv::cvtColor(color, color_bar, CV_HSV2BGR);
+    cv::cvtColor(color, color_bar, cv::COLOR_HSV2BGR);
 }
 
 
