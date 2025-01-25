@@ -103,12 +103,12 @@ void Calibrator::ProcessPointcloud(const pcl::PointCloud<pcl::PointXYZI>::Ptr pc
 
         pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_tmp(new pcl::PointCloud<pcl::PointXYZI>);
         pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_tmp_ds(new pcl::PointCloud<pcl::PointXYZI>);
-        float kLeafSize = 0.1;
+        const double leafSize = params_.down_sample_voxel;
         pcl::VoxelGrid<pcl::PointXYZI> filter_map;
-        filter_map.setLeafSize(kLeafSize, kLeafSize, kLeafSize);
+        filter_map.setLeafSize(leafSize, leafSize, leafSize);
         cloud_downsampled->clear();
 
-        pcl::octree::OctreePointCloud<pcl::PointXYZI> octree{1250 * kLeafSize};
+        pcl::octree::OctreePointCloud<pcl::PointXYZI> octree{1250.0 * leafSize};
         octree.setInputCloud(pc_filtered);
         octree.addPointsFromInputCloud();
         for (auto it = octree.leaf_depth_begin(); it != octree.leaf_depth_end(); ++it) {
